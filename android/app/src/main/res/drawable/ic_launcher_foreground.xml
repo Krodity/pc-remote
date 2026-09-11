@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A monitor glyph on the accent cyan, echoing the app's top-bar mark. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#22D3EE"
+        android:pathData="M30,34 L78,34 A4,4 0 0 1 82,38 L82,66 A4,4 0 0 1 78,70 L30,70 A4,4 0 0 1 26,66 L26,38 A4,4 0 0 1 30,34 Z M32,40 L32,64 L76,64 L76,40 Z" />
+    <path
+        android:fillColor="#22D3EE"
+        android:pathData="M46,70 L62,70 L64,76 L44,76 Z" />
+    <path
+        android:fillColor="#A78BFA"
+        android:pathData="M38,46 L54,46 L54,50 L38,50 Z M38,54 L48,54 L48,58 L38,58 Z" />
+</vector>

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- The agent speaks plain HTTP/WS. It is only reachable over Tailscale,
+         which already provides the encryption and the peer authentication;
+         terminating TLS again inside the tunnel would only add a self-signed
+         cert for the user to click past. -->
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

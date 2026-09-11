@@ -1,0 +1,10 @@
+<resources>
+    <!-- A bare dark shell: Compose paints everything, this just stops the
+         white flash between launch and first frame. -->
+    <style name="Theme.PcRemote" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/bg</item>
+        <item name="android:statusBarColor">@color/nav</item>
+        <item name="android:navigationBarColor">@color/nav</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

@@ -1,0 +1,22 @@
+[Unit]
+Description=pc-agent — serves PC Remote (files, input injection, PTY) to the phone
+Documentation=file://%h/Projects/pc-remote/README.md
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# A user service, deliberately: it injects input into this user's session and
+# opens a shell as this user. Running it as root would both over-privilege it
+# and hand the phone a root PTY.
+ExecStart=/usr/bin/python3 %h/Projects/pc-remote/agent/pc_agent.py
+Restart=on-failure
+RestartSec=5
+StartLimitBurst=10
+StartLimitIntervalSec=120
+
+# The PTY inherits this, so the shell the phone gets knows it is remote.
+Environment=PC_REMOTE=1
+
+[Install]
+WantedBy=default.target
