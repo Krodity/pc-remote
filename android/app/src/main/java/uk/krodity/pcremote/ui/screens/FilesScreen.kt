@@ -377,11 +377,15 @@ fun FilesScreen(vm: RemoteViewModel) {
 /**
  * Hand a remote media file to whatever player the user prefers.
  *
- * The URL points at the app's own loopback cache server, not at the agent: a
+ * The URL points at the app's own loopback stream server, not at the agent: a
  * third-party player cannot authenticate, and putting the bearer token in a URL
- * would hand the credential to an app we do not control. A chooser is always
- * shown rather than a default being remembered silently -- "any media player"
- * was the requirement.
+ * would hand the credential to an app we do not control.
+ *
+ * Fired as a bare ACTION_VIEW rather than through `createChooser`. A forced
+ * chooser cannot be dismissed with "Always", so it makes setting a default
+ * player impossible -- with a plain intent Android shows its own "Open with"
+ * dialog offering *Just once* / *Always* and then remembers the choice. The
+ * chooser is kept only as the fallback for when nothing claims the type.
  */
 private fun playOnPhone(vm: RemoteViewModel, ctx: android.content.Context, name: String) {
     vm.streamUrl(name) { url, mime ->
@@ -390,8 +394,11 @@ private fun playOnPhone(vm: RemoteViewModel, ctx: android.content.Context, name:
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             putExtra("title", name)
         }
-        runCatching { ctx.startActivity(Intent.createChooser(view, "Play $name")) }
-            .onFailure { vm.toast = "no app on this phone can play $name" }
+        val ok = runCatching { ctx.startActivity(view) }.isSuccess
+        if (!ok) {
+            runCatching { ctx.startActivity(Intent.createChooser(view, "Play ${'$'}name")) }
+                .onFailure { vm.toast = "no app on this phone can play ${'$'}name" }
+        }
     }
 }
 

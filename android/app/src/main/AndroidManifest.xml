@@ -5,6 +5,13 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.VIBRATE" />
 
+    <!-- The loopback stream server lives in this process, so the process has to
+         stay unfrozen while a player is reading from it. dataSync is the honest
+         type: this transfers file data, it does not own playback. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
@@ -35,5 +42,9 @@
                 <data android:scheme="pcremote" android:host="pair" />
             </intent-filter>
         </activity>
+        <service
+            android:name=".data.MediaStreamService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 </manifest>

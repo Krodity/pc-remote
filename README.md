@@ -81,27 +81,42 @@ cd android && ./gradlew assembleDebug
 
 ## Media streaming
 
-Media does not download before it plays. The app runs a **loopback HTTP server**
-and gives the player a `http://127.0.0.1:<port>/…` URL; that server fetches
-1 MiB blocks from the agent on demand and caches them.
-
-Two reasons it is built this way rather than just handing out an agent URL:
+Media **streams**; it is never downloaded whole. The app runs a **loopback HTTP
+server** and gives the player a `http://127.0.0.1:<port>/…` URL; that server
+pulls 1 MiB blocks from the agent on demand, a few ahead of the playhead, and
+keeps them in a bounded window.
 
 - **The token never leaves the app.** A third-party player cannot send an
   `Authorization` header, and putting the bearer token in a URL would hand a
   credential for this whole machine to an app we do not control. The loopback
   server holds the token and is itself the auth boundary.
-- **Seeking works, and costs nothing twice.** The cache file is sparse and
-  written at absolute offsets, so skipping to the middle of a film does not
-  drag the leading gigabyte down with it; a sidecar bitmap records which blocks
-  are really present, since a sparse file is otherwise indistinguishable from
-  one full of genuine zero bytes. Scrubbing backwards, reopening a file, or a
-  player that probes the container header and restarts (most do) all read from
-  disk. Budget is 3 GiB, evicted oldest-stream-first.
+- **The window is fixed at 96 MiB per file**, whatever its size. Slots are
+  recycled least-recently-used, so playing a 4 GB film to the end costs 96 MiB
+  on the phone, not 4 GB. Measured: ~27 MiB resident while streaming an 825 MB
+  file.
+- **The first and last block are pinned.** Container indexes live at one end or
+  the other (Matroska cues, an MP4's moov), and players re-read them on every
+  seek; letting them age out makes each scrub cost two extra round trips.
+- **Read-ahead is 4 blocks**, on a single thread with one job in flight, so it
+  cannot outrun the live read or evict what the player is about to want.
 
 This needs HTTP Range on the agent side, which `/api/fs/download` implements
 (`206`, `Content-Range`, suffix ranges, `416`), streaming in 256 KiB chunks so
 serving a 4 GB film does not balloon the agent's memory.
+
+**A foreground service runs while streaming.** The loopback server lives in the
+app's process, so the moment Android decides the app is a backgrounded nobody
+the socket stops being serviced and playback stalls with no useful error. This
+phone is unusually eager about that — Moto's `moto_freezer` froze the process 35
+seconds in during testing. The service is typed `dataSync`, not `mediaPlayback`:
+it transfers file data and does not own a media session, and claiming a type you
+do not implement is what gets a foreground service killed. It stops itself once
+nothing has read for a minute.
+
+**Picking a default player.** The play intent is a bare `ACTION_VIEW`, not
+`createChooser`. A forced chooser cannot be dismissed with *Always*, so it makes
+setting a default impossible; a plain intent gets Android's own "Open with"
+dialog with *Just once* / *Always*, and the choice sticks.
 
 ---
 

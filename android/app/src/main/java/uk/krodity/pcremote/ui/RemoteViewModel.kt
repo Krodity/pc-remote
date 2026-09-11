@@ -19,7 +19,8 @@ import uk.krodity.pcremote.data.Link
 import uk.krodity.pcremote.data.Pairing
 import uk.krodity.pcremote.data.Place
 import uk.krodity.pcremote.data.SettingsRepo
-import uk.krodity.pcremote.data.MediaCacheServer
+import uk.krodity.pcremote.data.MediaStreamService
+import uk.krodity.pcremote.data.MediaStreams
 import uk.krodity.pcremote.data.SysInfo
 import uk.krodity.pcremote.data.ThumbLoader
 import uk.krodity.pcremote.data.mediaMimeOf
@@ -87,12 +88,11 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
      * Loopback server that feeds cached, seekable streams to phone media
      * players. Created lazily -- most sessions never open a video.
      */
-    private val media by lazy {
-        MediaCacheServer(getApplication<Application>().cacheDir) { path, start, end ->
+    private val media
+        get() = MediaStreams.server(getApplication<Application>().cacheDir) { path, start, end ->
             val c = client ?: throw IllegalStateException("not connected")
             c.fetchRangeBlocking(path, start, end)
         }
-    }
 
     init {
         viewModelScope.launch {
@@ -137,7 +137,11 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
                     // The agent's guessed type is ignored in favour of ours:
                     // it reports octet-stream for containers like .mkv that
                     // Python's mimetypes does not know.
-                    onReady(media.urlFor(path, size, mime), mime)
+                    val url = media.urlFor(path, size, mime)
+                    // Raised to the foreground before the player launches, or
+                    // this process gets frozen the moment it loses focus.
+                    MediaStreamService.start(getApplication(), name)
+                    onReady(url, mime)
                 }
                 .onFailure { toast = "stream: ${it.message}" }
         }
@@ -380,7 +384,9 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     override fun onCleared() {
-        media.stop()
+        // Deliberately not stopping the stream server: the activity going away
+        // while an external player is mid-file is the normal case, and the
+        // foreground service is what decides when streaming is really over.
         disconnect()
         super.onCleared()
     }
