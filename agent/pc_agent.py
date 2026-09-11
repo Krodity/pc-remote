@@ -21,6 +21,7 @@ keystrokes, and read/write on the whole filesystem. That is the point of the
 tool, and it is exactly as much access as the person holding the keyboard has.
 """
 import base64
+import hashlib
 import json
 import logging
 import mimetypes
@@ -213,12 +214,91 @@ def places():
     candidates = [
         ('Home', HOME), ('Downloads', HOME / 'Downloads'),
         ('Documents', HOME / 'Documents'), ('Pictures', HOME / 'Pictures'),
+        ('Videos', HOME / 'Videos'), ('Music', HOME / 'Music'),
         ('Projects', HOME / 'Projects'), ('bin', HOME / 'bin'),
         ('Memory palace', HOME / 'mempalace'), ('Config', HOME / '.config'),
         ('Games', pathlib.Path('/mnt/games')), ('Root', pathlib.Path('/')),
         ('etc', pathlib.Path('/etc')), ('Logs', pathlib.Path('/var/log')),
     ]
     return [{'label': lbl, 'path': str(p)} for lbl, p in candidates if p.is_dir()]
+
+
+THUMB_CACHE = pathlib.Path(os.environ.get(
+    'XDG_CACHE_HOME', str(HOME / '.cache'))) / 'pc-remote/thumbs'
+
+IMAGE_EXT = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff', 'tif', 'avif',
+             'heic', 'heif', 'ico', 'svg'}
+VIDEO_EXT = {'mp4', 'm4v', 'mkv', 'webm', 'avi', 'mov', 'wmv', 'flv', 'mpg',
+             'mpeg', 'ts', 'm2ts', '3gp', 'ogv'}
+
+
+def thumbnail(p: pathlib.Path, size: int = 256) -> bytes:
+    """Render a JPEG thumbnail for an image, video or PDF.
+
+    Cached under ~/.cache/pc-remote/thumbs keyed by path+mtime+size, because a
+    grid view asks for dozens at once and re-deriving a video frame per scroll
+    would pin a CPU core.
+    """
+    ext = p.name.rsplit('.', 1)[-1].lower() if '.' in p.name else ''
+    st = p.stat()
+    key = hashlib.sha1(
+        f'{p}\0{int(st.st_mtime)}\0{st.st_size}\0{size}'.encode()).hexdigest()
+    THUMB_CACHE.mkdir(parents=True, exist_ok=True)
+    cached = THUMB_CACHE / f'{key}.jpg'
+    if cached.exists():
+        return cached.read_bytes()
+
+    if ext in IMAGE_EXT:
+        try:
+            from PIL import Image, ImageOps
+            with Image.open(p) as im:
+                # EXIF orientation must be applied or phone photos come out
+                # sideways.
+                im = ImageOps.exif_transpose(im)
+                im.thumbnail((size, size))
+                im = im.convert('RGB')
+                im.save(cached, 'JPEG', quality=82)
+        except Exception:
+            # Pillow refuses very large images (its decompression-bomb guard
+            # trips at ~179 MP) and has no format for some -- .avif and .heic
+            # need plugins that may not be installed. That guard is aimed at
+            # hostile uploads; these are the user's own files on their own
+            # disk, and upscayl output here really is 235 MP. ImageMagick
+            # streams through a disk-backed pixel cache, so it handles them
+            # without the memory blow-up that simply raising the limit would
+            # cause. "[0]" takes the first frame of a multi-page image.
+            r = subprocess.run(
+                ['magick', f'{p}[0]', '-auto-orient',
+                 '-thumbnail', f'{size}x{size}', '-quality', '82', str(cached)],
+                capture_output=True, timeout=60)
+            if r.returncode != 0 or not cached.exists():
+                raise ValueError(
+                    (r.stderr.decode(errors='replace').strip() or
+                     'could not decode the image')[:200])
+    elif ext in VIDEO_EXT:
+        # ffmpegthumbnailer picks a representative frame rather than whatever
+        # happens to be at a fixed offset -- many films open on black.
+        r = subprocess.run(
+            ['ffmpegthumbnailer', '-i', str(p), '-o', str(cached),
+             '-s', str(size), '-q', '8'],
+            capture_output=True, timeout=30)
+        if r.returncode != 0 or not cached.exists():
+            raise ValueError('could not decode a frame')
+    elif ext == 'pdf':
+        r = subprocess.run(
+            ['pdftoppm', '-jpeg', '-f', '1', '-l', '1', '-scale-to', str(size),
+             str(p), str(cached.with_suffix(''))],
+            capture_output=True, timeout=30)
+        # pdftoppm appends a page number; normalise the name back.
+        produced = next(THUMB_CACHE.glob(f'{key}-*.jpg'), None)
+        if produced:
+            produced.rename(cached)
+        if r.returncode != 0 or not cached.exists():
+            raise ValueError('could not render the PDF')
+    else:
+        raise ValueError(f'no thumbnail for .{ext}')
+
+    return cached.read_bytes()
 
 
 def sysinfo():
@@ -324,8 +404,81 @@ class Handler(BaseHTTPRequestHandler):
         raw = self._body()
         return json.loads(raw) if raw else {}
 
+    # ── file streaming ───────────────────────────────────────────────────────
+    def _send_file(self, p: pathlib.Path, attach=True):
+        """Stream a file, honouring HTTP Range.
+
+        Range support is what makes this usable for media: a player needs to
+        seek and to fetch in chunks, and without a 206 it would have to pull a
+        whole 4 GB film before showing a frame. The file is also streamed in
+        blocks rather than read into memory, so serving a large video does not
+        balloon the agent's RSS.
+        """
+        if p.is_dir():
+            raise IsADirectoryError('cannot download a directory')
+        size = p.stat().st_size
+        ctype = mimetypes.guess_type(p.name)[0] or 'application/octet-stream'
+
+        start, end = 0, size - 1
+        partial = False
+        rng = self.headers.get('Range')
+        if rng and rng.startswith('bytes=') and size:
+            spec = rng[6:].split(',')[0].strip()
+            first, _, last = spec.partition('-')
+            try:
+                if first:
+                    start = int(first)
+                    end = int(last) if last else size - 1
+                else:
+                    # "bytes=-N" means the final N bytes.
+                    start = max(0, size - int(last))
+                    end = size - 1
+            except ValueError:
+                start, end = 0, size - 1
+            else:
+                partial = True
+
+            if start >= size:
+                self.send_response(416)
+                self.send_header('Content-Range', f'bytes */{size}')
+                self.send_header('Content-Length', '0')
+                self.end_headers()
+                return
+            end = min(end, size - 1)
+
+        length = end - start + 1
+        self.send_response(206 if partial else 200)
+        self.send_header('Content-Type', ctype)
+        self.send_header('Content-Length', str(length))
+        self.send_header('Accept-Ranges', 'bytes')
+        if partial:
+            self.send_header('Content-Range', f'bytes {start}-{end}/{size}')
+        if attach:
+            self.send_header('Content-Disposition',
+                             f'attachment; filename="{urllib.parse.quote(p.name)}"')
+        self.end_headers()
+        if self.command == 'HEAD':
+            return
+
+        remaining = length
+        with p.open('rb') as f:
+            f.seek(start)
+            while remaining > 0:
+                chunk = f.read(min(256 * 1024, remaining))
+                if not chunk:
+                    break
+                try:
+                    self.wfile.write(chunk)
+                except (BrokenPipeError, ConnectionResetError):
+                    # A player seeking away mid-download is normal, not an error.
+                    return
+                remaining -= len(chunk)
+
     # ── routing ──────────────────────────────────────────────────────────────
     def do_GET(self):
+        self._route('GET')
+
+    def do_HEAD(self):
         self._route('GET')
 
     def do_POST(self):
@@ -392,14 +545,16 @@ class Handler(BaseHTTPRequestHandler):
                                'truncated': size > MAX_TEXT_BYTES})
 
         if path == '/api/fs/download':
-            p = resolve(arg('path'))
-            if p.is_dir():
-                raise IsADirectoryError('cannot download a directory')
-            ctype = mimetypes.guess_type(p.name)[0] or 'application/octet-stream'
-            data = p.read_bytes()
-            return self._send(200, data, ctype, {
-                'Content-Disposition':
-                    f'attachment; filename="{urllib.parse.quote(p.name)}"'})
+            return self._send_file(resolve(arg('path')),
+                                   attach=arg('attach', '1') != '0')
+
+        if path == '/api/fs/thumb':
+            size = max(48, min(512, int(arg('size', '256') or 256)))
+            data = thumbnail(resolve(arg('path')), size)
+            # Immutable: the cache key already includes mtime and size, so a
+            # changed file is a different URL.
+            return self._send(200, data, 'image/jpeg',
+                              {'Cache-Control': 'max-age=86400'})
 
         if method != 'POST':
             return self._err(404, f'no such endpoint: {path}')

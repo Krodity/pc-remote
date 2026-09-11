@@ -82,6 +82,13 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        // Coming back from an external player is the common case; do not make
+        // the user wait for the next ping tick to see the link restored.
+        vm.resumeIfDropped()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handlePairLink(intent)
@@ -157,24 +164,24 @@ private fun TopBar(vm: RemoteViewModel) {
         Row(
             Modifier
                 .fillMaxWidth()
-                .height(50.dp)
+                .height(58.dp)
                 .padding(horizontal = 16.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Box(
                 Modifier
-                    .size(28.dp)
-                    .clip(RoundedCornerShape(6.dp))
+                    .size(34.dp)
+                    .clip(RoundedCornerShape(8.dp))
                     .background(Brush.linearGradient(listOf(P.accentD, P.purple))),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(Icons.Filled.Monitor, null, tint = Color.White,
-                    modifier = Modifier.size(15.dp))
+                    modifier = Modifier.size(19.dp))
             }
             Spacer(Modifier.width(10.dp))
             Text(
                 vm.info?.host?.uppercase() ?: vm.pairing.host.uppercase(),
-                color = P.text, fontSize = 14.sp, fontWeight = FontWeight.Medium,
+                color = P.text, fontSize = 16.sp, fontWeight = FontWeight.Medium,
                 maxLines = 1, overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f, fill = false),
             )
@@ -187,23 +194,23 @@ private fun TopBar(vm: RemoteViewModel) {
             }
             Box(
                 Modifier
-                    .size(7.dp)
+                    .size(9.dp)
                     .clip(CircleShape)
                     .background(dot)
             )
             Spacer(Modifier.width(6.dp))
-            Text(label, color = dot, fontSize = 12.sp)
+            Text(label, color = dot, fontSize = 13.sp)
             Spacer(Modifier.width(10.dp))
 
             Box(
                 Modifier
-                    .size(34.dp)
-                    .clip(RoundedCornerShape(6.dp))
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(8.dp))
                     .tapTarget { vm.connect() },
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(Icons.Filled.Refresh, "Reconnect", tint = P.sub,
-                    modifier = Modifier.size(15.dp))
+                    modifier = Modifier.size(19.dp))
             }
         }
         Box(Modifier.fillMaxWidth().height(1.dp).background(P.border))
@@ -217,13 +224,16 @@ private fun BottomNav(current: Tab, onSelect: (Tab) -> Unit) {
             .fillMaxWidth()
             .background(P.nav)
             .imePadding()
+            // Inset the whole bar, not the row: applied inside a fixed 62dp
+            // height the gesture bar eats the labels instead of sitting below
+            // them.
+            .navigationBarsPadding()
     ) {
         Box(Modifier.fillMaxWidth().height(1.dp).background(P.border))
         Row(
             Modifier
                 .fillMaxWidth()
-                .height(62.dp)
-                .navigationBarsPadding()
+                .height(74.dp)
         ) {
             Tab.entries.forEach { t ->
                 val active = t == current
@@ -239,23 +249,23 @@ private fun BottomNav(current: Tab, onSelect: (Tab) -> Unit) {
                             Modifier
                                 .align(Alignment.TopCenter)
                                 .fillMaxWidth(0.6f)
-                                .height(2.dp)
+                                .height(3.dp)
                                 .clip(RoundedCornerShape(bottomStart = 3.dp, bottomEnd = 3.dp))
                                 .background(P.accent)
                         )
                     }
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalArrangement = Arrangement.spacedBy(5.dp),
                     ) {
                         Icon(
                             t.icon, t.label,
                             tint = if (active) P.accent else P.sub,
-                            modifier = Modifier.size(20.dp),
+                            modifier = Modifier.size(26.dp),
                         )
                         Text(
                             t.label,
-                            fontSize = 10.sp,
+                            fontSize = 12.sp,
                             color = if (active) P.accent else P.sub,
                             fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
                         )

@@ -28,9 +28,20 @@ F1–F12, media keys, and a free-text field that types a whole string. The Quick
 Combos are read off *this machine's* live Hyprland config — `Super+Q` closes a
 window, `Super+Space` is Ulauncher, `Super+Shift+S` is the screen snip.
 
-**Files** — browse, open, edit and save text files, create, rename, and delete
-anywhere on the filesystem. "Open on PC" hands a file to `xdg-open` on the
-desktop.
+**Files** — browse, create, rename, and delete anywhere on the filesystem, in a
+detail list or a thumbnail grid.
+
+- **Open on PC / Open in app** — a pill in the breadcrumb row decides where a
+  tapped file goes. The default is the PC (`xdg-open` on the desktop), because
+  the phone can only handle text and media while the desktop handles
+  everything. Switched to *app*, text opens in the built-in editor and media
+  streams to a phone player. Both destinations stay reachable from the ⋮ menu
+  whichever way the pill is set, and the choice persists.
+- **Thumbnails** — the agent renders previews for images, video and PDF
+  (Pillow, `ffmpegthumbnailer`, `pdftoppm`), cached on both ends. Video tiles
+  carry a play badge so a still and a film are distinguishable at a glance.
+- **Streaming** — tapping a video or audio file hands it to whatever player the
+  user picks. See *Media streaming* below.
 
 **Shell** — a genuine PTY running your login shell with `-i`, so your aliases,
 your prompt and interactive programs (`top`, `vim`, `sudo`'s password prompt)
@@ -65,6 +76,32 @@ Rebuild with:
 ```bash
 cd android && ./gradlew assembleDebug
 ```
+
+---
+
+## Media streaming
+
+Media does not download before it plays. The app runs a **loopback HTTP server**
+and gives the player a `http://127.0.0.1:<port>/…` URL; that server fetches
+1 MiB blocks from the agent on demand and caches them.
+
+Two reasons it is built this way rather than just handing out an agent URL:
+
+- **The token never leaves the app.** A third-party player cannot send an
+  `Authorization` header, and putting the bearer token in a URL would hand a
+  credential for this whole machine to an app we do not control. The loopback
+  server holds the token and is itself the auth boundary.
+- **Seeking works, and costs nothing twice.** The cache file is sparse and
+  written at absolute offsets, so skipping to the middle of a film does not
+  drag the leading gigabyte down with it; a sidecar bitmap records which blocks
+  are really present, since a sparse file is otherwise indistinguishable from
+  one full of genuine zero bytes. Scrubbing backwards, reopening a file, or a
+  player that probes the container header and restarts (most do) all read from
+  disk. Budget is 3 GiB, evicted oldest-stream-first.
+
+This needs HTTP Range on the agent side, which `/api/fs/download` implements
+(`206`, `Content-Range`, suffix ranges, `416`), streaming in 256 KiB chunks so
+serving a 4 GB film does not balloon the agent's memory.
 
 ---
 
@@ -130,6 +167,23 @@ map; individual keys and combos are unaffected.
 - A client that drops off Wi-Fi mid-chord would otherwise leave Ctrl held down
   on the desktop; the agent calls `release_all()` on disconnect.
 - `Alt+F4` does nothing on this desktop. `Super+Q` closes a window.
+- **OkHttp's `newBuilder()` shares the Dispatcher and ConnectionPool** with the
+  parent client. The default Dispatcher caps one host at 5 concurrent requests,
+  so media block fetches queued the ping call and the socket handshake behind
+  them and the app went "offline" the instant a video started. The streaming
+  client replaces both.
+- Android reaps the WebSocket while the app sits in the background — which is
+  exactly what happens when an external player is in the foreground. The ping
+  loop notices (agent reachable, socket gone) and rebuilds it, and `onResume`
+  triggers the same check immediately.
+- **JetBrains Mono is bundled as the Nerd Font build.** With the platform
+  monospace font, this box's powerline prompt renders as tofu boxes. The ANSI
+  interpreter also honours background colours for the same reason: powerline
+  separator glyphs are drawn in the adjoining segment's background, so dropping
+  backgrounds turns the prompt into white blobs.
+- Pillow's decompression-bomb guard trips at ~179 MP and refuses upscayl output
+  (235 MP here). Thumbnailing falls back to ImageMagick, which streams through a
+  disk-backed pixel cache rather than blowing up memory.
 
 ---
 
@@ -143,7 +197,8 @@ All routes need `Authorization: Bearer <token>` except `/pair`.
 | GET | `/api/sysinfo` | host, OS, kernel, uptime, load, CPU, memory, disk |
 | GET | `/api/fs/list?path=` | directory listing, dirs first |
 | GET | `/api/fs/read?path=` | text, capped at 2 MB |
-| GET | `/api/fs/download?path=` | raw bytes |
+| GET | `/api/fs/download?path=` | raw bytes; supports Range, `attach=0` to inline |
+| GET | `/api/fs/thumb?path=&size=` | JPEG preview of an image, video or PDF |
 | POST | `/api/fs/write` `{path,text}` | |
 | POST | `/api/fs/upload?path=` | raw body |
 | POST | `/api/fs/mkdir` · `/create` · `/rename` · `/copy` | |

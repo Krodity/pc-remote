@@ -7,9 +7,11 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
+import uk.krodity.pcremote.R
 
 /**
  * The mock's palette, carried over unchanged.
@@ -38,8 +40,21 @@ object P {
     val term = Color(0xFF050C18)
 }
 
-/** The mock's `P.mono`. Monospace is the platform's JetBrains-alike stand-in. */
-val Mono = FontFamily.Monospace
+/**
+ * The mock's `P.mono` — JetBrains Mono, bundled rather than approximated.
+ *
+ * It is the *Nerd Font* build specifically, and that is not cosmetic: this
+ * box's shell prompt is powerline-styled, so its glyphs live in the Unicode
+ * Private Use Area. With the platform monospace font those codepoints render as
+ * tofu boxes and the prompt is unreadable on the phone. Bundling the patched
+ * font is the only way the Shell tab shows what the terminal actually shows.
+ *
+ * SIL Open Font License — see docs/OFL-JetBrainsMono.txt.
+ */
+val Mono = FontFamily(
+    Font(R.font.jetbrains_mono_nf_regular, FontWeight.Normal),
+    Font(R.font.jetbrains_mono_nf_bold, FontWeight.Bold),
+)
 
 private val scheme = darkColorScheme(
     primary = P.accent,

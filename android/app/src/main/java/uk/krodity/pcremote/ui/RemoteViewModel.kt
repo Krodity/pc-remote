@@ -19,7 +19,10 @@ import uk.krodity.pcremote.data.Link
 import uk.krodity.pcremote.data.Pairing
 import uk.krodity.pcremote.data.Place
 import uk.krodity.pcremote.data.SettingsRepo
+import uk.krodity.pcremote.data.MediaCacheServer
 import uk.krodity.pcremote.data.SysInfo
+import uk.krodity.pcremote.data.ThumbLoader
+import uk.krodity.pcremote.data.mediaMimeOf
 import uk.krodity.pcremote.data.verify
 
 class RemoteViewModel(app: Application) : AndroidViewModel(app) {
@@ -40,6 +43,16 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     var info by mutableStateOf<SysInfo?>(null)
         private set
     var toast by mutableStateOf<String?>(null)
+
+    /** false = hand tapped files to xdg-open on the PC; true = edit them here. */
+    var openInApp by mutableStateOf(false)
+        private set
+
+    /** Detail list vs thumbnail grid in the file browser. */
+    var gridView by mutableStateOf(false)
+        private set
+
+    val thumbs = ThumbLoader(app.cacheDir)
 
     // ── files ────────────────────────────────────────────────────────────────
     var cwd by mutableStateOf("")
@@ -70,7 +83,24 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
 
     private var pingJob: Job? = null
 
+    /**
+     * Loopback server that feeds cached, seekable streams to phone media
+     * players. Created lazily -- most sessions never open a video.
+     */
+    private val media by lazy {
+        MediaCacheServer(getApplication<Application>().cacheDir) { path, start, end ->
+            val c = client ?: throw IllegalStateException("not connected")
+            c.fetchRangeBlocking(path, start, end)
+        }
+    }
+
     init {
+        viewModelScope.launch {
+            settings.openInApp.collect { openInApp = it }
+        }
+        viewModelScope.launch {
+            settings.gridView.collect { gridView = it }
+        }
         viewModelScope.launch {
             settings.pairing.collect { p ->
                 val changed = p != pairing
@@ -85,6 +115,47 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         verify(host, token)
     }.onSuccess {
         settings.save(host, token)
+    }
+
+    /**
+     * Resolve a remote media file to a local URL any player can open.
+     *
+     * Returns null (and toasts) if the agent cannot be reached, so the caller
+     * never fires an intent at a URL that will immediately fail.
+     */
+    fun streamUrl(name: String, onReady: (String, String) -> Unit) {
+        val c = client ?: return
+        val path = child(name)
+        val mime = mediaMimeOf(name) ?: "application/octet-stream"
+        viewModelScope.launch {
+            runCatching { c.probe(path) }
+                .onSuccess { (size, _) ->
+                    if (size <= 0) {
+                        toast = "$name is empty"
+                        return@onSuccess
+                    }
+                    // The agent's guessed type is ignored in favour of ours:
+                    // it reports octet-stream for containers like .mkv that
+                    // Python's mimetypes does not know.
+                    onReady(media.urlFor(path, size, mime), mime)
+                }
+                .onFailure { toast = "stream: ${it.message}" }
+        }
+    }
+
+    fun toggleOpenInApp() {
+        viewModelScope.launch { settings.setOpenInApp(!openInApp) }
+    }
+
+    /** Called when the activity resumes; cheap no-op if the link is healthy. */
+    fun resumeIfDropped() {
+        if (pairing.isSet && link == Link.OFFLINE) {
+            if (client == null) connect() else reconnectSocket()
+        }
+    }
+
+    fun toggleGridView() {
+        viewModelScope.launch { settings.setGridView(!gridView) }
     }
 
     fun unpair() {
@@ -115,6 +186,22 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         startPingLoop()
     }
 
+    /** Re-open just the socket, keeping the existing client and ping loop. */
+    private fun reconnectSocket() {
+        val c = client ?: return
+        channel?.close()
+        link = Link.CONNECTING
+        channel = c.connect(
+            onOpen = {
+                link = Link.ONLINE
+                ptyReady = false
+                if (cwd.isNotBlank()) navigate(cwd, push = false)
+            },
+            onMessage = ::onSocketMessage,
+            onClosed = { link = Link.OFFLINE; ptyReady = false },
+        )
+    }
+
     fun disconnect() {
         pingJob?.cancel()
         channel?.close()
@@ -131,7 +218,16 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
                 runCatching { c.ping() }
                     .onSuccess {
                         pingMs = it
-                        if (link == Link.CONNECTING) link = Link.ONLINE
+                        // The agent answers but the socket is gone -- Android
+                        // reaps it whenever the app spends a while in the
+                        // background, which is exactly what happens while an
+                        // external player is in the foreground. Rebuild it
+                        // rather than leaving the user on a dead "offline".
+                        when (link) {
+                            Link.CONNECTING -> link = Link.ONLINE
+                            Link.OFFLINE -> reconnectSocket()
+                            Link.ONLINE -> {}
+                        }
                     }
                     .onFailure { pingMs = null }
                 delay(5000)
@@ -284,6 +380,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     override fun onCleared() {
+        media.stop()
         disconnect()
         super.onCleared()
     }

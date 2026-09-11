@@ -1,6 +1,7 @@
 package uk.krodity.pcremote.data
 
 import android.content.Context
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -56,16 +57,38 @@ data class Pairing(val host: String = "", val token: String = "") {
 class SettingsRepo(private val ctx: Context) {
     private val hostKey = stringPreferencesKey("host")
     private val tokenKey = stringPreferencesKey("token")
+    private val openInAppKey = booleanPreferencesKey("open_in_app")
+    private val gridViewKey = booleanPreferencesKey("grid_view")
 
     val pairing: Flow<Pairing> = ctx.store.data.map {
         Pairing(it[hostKey] ?: "", it[tokenKey] ?: "")
     }
+
+    /**
+     * Where a tapped file opens.
+     *
+     * Defaults to false — i.e. on the PC. The phone's editor only handles text,
+     * and the desktop already knows what to do with every other type, so
+     * handing the file to `xdg-open` is right far more often than not.
+     */
+    val openInApp: Flow<Boolean> = ctx.store.data.map { it[openInAppKey] ?: false }
 
     suspend fun save(host: String, token: String) {
         ctx.store.edit {
             it[hostKey] = host.trim()
             it[tokenKey] = token.trim()
         }
+    }
+
+    /** true = thumbnail grid, false = detail list. */
+    val gridView: Flow<Boolean> = ctx.store.data.map { it[gridViewKey] ?: false }
+
+    suspend fun setGridView(value: Boolean) {
+        ctx.store.edit { it[gridViewKey] = value }
+    }
+
+    suspend fun setOpenInApp(value: Boolean) {
+        ctx.store.edit { it[openInAppKey] = value }
     }
 
     suspend fun clear() {

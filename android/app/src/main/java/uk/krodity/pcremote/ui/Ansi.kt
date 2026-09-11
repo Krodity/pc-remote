@@ -29,6 +29,7 @@ class AnsiTerminal(private val maxLines: Int = 3000) {
     private var style = SpanStyle(color = P.text)
     private var bold = false
     private var fg: Color? = null
+    private var bg: Color? = null
 
     /** Bumped on every mutation so Compose can key a recomposition off it. */
     var revision = 0
@@ -135,6 +136,9 @@ class AnsiTerminal(private val maxLines: Int = 3000) {
                 in 30..37 -> { fg = basic(n - 30); restyle() }
                 in 90..97 -> { fg = bright(n - 90); restyle() }
                 39 -> { fg = null; restyle() }
+                in 40..47 -> { bg = basic(n - 40); restyle() }
+                in 100..107 -> { bg = bright(n - 100); restyle() }
+                49 -> { bg = null; restyle() }
                 38 -> {
                     // 38;5;n (256-colour) and 38;2;r;g;b (truecolour)
                     when (nums.getOrNull(i + 1)) {
@@ -151,22 +155,41 @@ class AnsiTerminal(private val maxLines: Int = 3000) {
                     }
                     restyle()
                 }
-                // Background colours are dropped on purpose: the panel has one
-                // ground colour, and honouring backgrounds would paint blocks
-                // of terminal-theme colour over it.
-                48 -> i += if (nums.getOrNull(i + 1) == 5) 2 else 4
+                48 -> {
+                    // Backgrounds matter here: this box's prompt is powerline,
+                    // and its separator glyphs are drawn in the *background*
+                    // colour of the adjoining segment. Drop them and the prompt
+                    // renders as white blobs.
+                    when (nums.getOrNull(i + 1)) {
+                        5 -> { bg = xterm256(nums.getOrNull(i + 2) ?: 0); i += 2 }
+                        2 -> {
+                            bg = Color(
+                                (nums.getOrNull(i + 2) ?: 0),
+                                (nums.getOrNull(i + 3) ?: 0),
+                                (nums.getOrNull(i + 4) ?: 0),
+                            )
+                            i += 4
+                        }
+                        else -> {}
+                    }
+                    restyle()
+                }
+                // Reverse video: swap the two, which is how some prompts draw
+                // a selected segment.
+                7 -> { val t = fg; fg = bg ?: P.bg; bg = t ?: P.text; restyle() }
             }
             i++
         }
     }
 
     private fun reset() {
-        bold = false; fg = null; restyle()
+        bold = false; fg = null; bg = null; restyle()
     }
 
     private fun restyle() {
         style = SpanStyle(
             color = fg ?: P.text,
+            background = bg ?: Color.Unspecified,
             fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal,
         )
     }

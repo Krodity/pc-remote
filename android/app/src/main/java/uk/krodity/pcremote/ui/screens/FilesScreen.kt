@@ -1,9 +1,12 @@
 package uk.krodity.pcremote.ui.screens
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -15,6 +18,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -24,14 +30,20 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.DesktopWindows
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.PhoneAndroid
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.MoreVert
@@ -42,6 +54,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -50,13 +63,20 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
+import android.content.Intent
+import android.net.Uri
 import uk.krodity.pcremote.data.FsEntry
+import uk.krodity.pcremote.data.canThumb
+import uk.krodity.pcremote.data.isMedia
 import uk.krodity.pcremote.ui.FieldStyle
 import uk.krodity.pcremote.ui.RemoteViewModel
 import uk.krodity.pcremote.ui.fileColor
@@ -84,6 +104,7 @@ fun FilesScreen(vm: RemoteViewModel) {
     var editor by remember { mutableStateOf<Pair<String, String>?>(null) }
     var showPlaces by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val ctx = LocalContext.current
 
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
@@ -109,12 +130,18 @@ fun FilesScreen(vm: RemoteViewModel) {
                     }
                 }
 
-                // ── breadcrumb ──────────────────────────────────────────────
+                // ── breadcrumb + open-mode toggle ───────────────────────────
+                // The toggle lives here rather than in the tool row above: eight
+                // 40dp controls do not fit across a ~393dp-wide phone, and this
+                // row has spare width once the crumbs are allowed to scroll.
+                Row(
+                    Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                 Row(
                     Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState())
-                        .padding(start = 12.dp, end = 12.dp, bottom = 10.dp),
+                        .weight(1f)
+                        .horizontalScroll(rememberScrollState()),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     val parts = vm.cwd.trim('/').split('/').filter { it.isNotBlank() }
@@ -140,6 +167,31 @@ fun FilesScreen(vm: RemoteViewModel) {
                             modifier = Modifier
                                 .tapTarget { vm.navigate("/" + parts.take(i + 1).joinToString("/")) }
                                 .padding(horizontal = 4.dp, vertical = 2.dp),
+                        )
+                    }
+                }
+                    Spacer(Modifier.width(8.dp))
+                    OpenModeToggle(vm.openInApp) { vm.toggleOpenInApp() }
+                    Spacer(Modifier.width(6.dp))
+                    Box(
+                        Modifier
+                            .size(30.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (vm.gridView) P.glow else P.panel)
+                            .border(
+                                1.dp,
+                                if (vm.gridView) P.accent else P.border,
+                                RoundedCornerShape(8.dp),
+                            )
+                            .tapTarget { vm.toggleGridView() },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            if (vm.gridView) Icons.AutoMirrored.Filled.ViewList
+                            else Icons.Filled.GridView,
+                            "Switch between list and thumbnails",
+                            tint = if (vm.gridView) P.accent else P.sub,
+                            modifier = Modifier.size(15.dp),
                         )
                     }
                 }
@@ -177,7 +229,22 @@ fun FilesScreen(vm: RemoteViewModel) {
 
             // ── listing ─────────────────────────────────────────────────────
             Box(Modifier.weight(1f).fillMaxWidth()) {
-                LazyColumn(Modifier.fillMaxSize()) {
+                val openEntry: (FsEntry) -> Unit = { entry ->
+                    when {
+                        entry.isDir -> vm.navigate(vm.child(entry.name))
+                        !vm.openInApp -> vm.fsAction("open") {
+                            it.openOnPc(vm.child(entry.name))
+                        }
+                        isMedia(entry.name) -> playOnPhone(vm, ctx, entry.name)
+                        else -> openHere(vm, scope, entry.name) {
+                            editor = entry.name to it
+                        }
+                    }
+                }
+
+                if (vm.gridView) {
+                    GridListing(vm, openEntry) { menuFor = it }
+                } else LazyColumn(Modifier.fillMaxSize()) {
 
                     if (creating != null) {
                         item {
@@ -226,33 +293,29 @@ fun FilesScreen(vm: RemoteViewModel) {
                             } else {
                                 FileRow(
                                     entry = entry,
-                                    onOpen = {
-                                        if (entry.isDir) {
-                                            vm.navigate(vm.child(entry.name))
-                                        } else if (isTextLike(entry.name)) {
-                                            scope.launch {
-                                                runCatching { vm.client?.read(vm.child(entry.name)) }
-                                                    .onSuccess { r ->
-                                                        if (r != null) editor = entry.name to r.text
-                                                    }
-                                                    .onFailure { vm.toast = it.message }
-                                            }
-                                        } else {
-                                            vm.toast = "${entry.name} is not a text file — use ⋮ → Open on PC"
-                                        }
-                                    },
+                                    onOpen = { openEntry(entry) },
                                     onMenu = { menuFor = if (menuFor == entry.name) null else entry.name },
                                 )
                             }
 
                             if (menuFor == entry.name) {
                                 ActionSheet(
+                                    canEditHere = !entry.isDir && !isMedia(entry.name),
+                                    canPlay = isMedia(entry.name),
+                                    onPlay = {
+                                        menuFor = null
+                                        playOnPhone(vm, ctx, entry.name)
+                                    },
                                     onRename = {
                                         renaming = entry.name; draft = entry.name; menuFor = null
                                     },
                                     onOpenOnPc = {
                                         menuFor = null
                                         vm.fsAction("open") { it.openOnPc(vm.child(entry.name)) }
+                                    },
+                                    onEditHere = {
+                                        menuFor = null
+                                        openHere(vm, scope, entry.name) { editor = entry.name to it }
                                     },
                                     onDelete = {
                                         menuFor = null
@@ -308,6 +371,188 @@ fun FilesScreen(vm: RemoteViewModel) {
                 },
             )
         }
+    }
+}
+
+/**
+ * Hand a remote media file to whatever player the user prefers.
+ *
+ * The URL points at the app's own loopback cache server, not at the agent: a
+ * third-party player cannot authenticate, and putting the bearer token in a URL
+ * would hand the credential to an app we do not control. A chooser is always
+ * shown rather than a default being remembered silently -- "any media player"
+ * was the requirement.
+ */
+private fun playOnPhone(vm: RemoteViewModel, ctx: android.content.Context, name: String) {
+    vm.streamUrl(name) { url, mime ->
+        val view = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(Uri.parse(url), mime)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            putExtra("title", name)
+        }
+        runCatching { ctx.startActivity(Intent.createChooser(view, "Play $name")) }
+            .onFailure { vm.toast = "no app on this phone can play $name" }
+    }
+}
+
+/**
+ * Pull a file's text down and hand it to the in-app editor.
+ *
+ * Only text is offered here — the phone has no viewer for anything else, and
+ * the PC already has one for everything.
+ */
+private fun openHere(
+    vm: RemoteViewModel,
+    scope: kotlinx.coroutines.CoroutineScope,
+    name: String,
+    onLoaded: (String) -> Unit,
+) {
+    if (!isTextLike(name)) {
+        vm.toast = "$name is not text — open it on the PC instead"
+        return
+    }
+    scope.launch {
+        runCatching { vm.client?.read(vm.child(name)) }
+            .onSuccess { r -> if (r != null) onLoaded(r.text) }
+            .onFailure { vm.toast = it.message }
+    }
+}
+
+/**
+ * Where a tap sends a file: the PC, or this phone.
+ *
+ * A labelled pill rather than a bare icon — "opens somewhere else entirely" is
+ * too consequential a mode to leave the user guessing at from a glyph.
+ */
+@Composable
+private fun OpenModeToggle(openInApp: Boolean, onToggle: () -> Unit) {
+    val tint = if (openInApp) P.accent else P.sub
+    Row(
+        Modifier
+            .clip(RoundedCornerShape(20.dp))
+            .background(if (openInApp) P.glow else P.panel)
+            .border(1.dp, if (openInApp) P.accent else P.border, RoundedCornerShape(20.dp))
+            .tapTarget(onClick = onToggle)
+            .padding(horizontal = 10.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+        Icon(
+            if (openInApp) Icons.Filled.PhoneAndroid else Icons.Filled.DesktopWindows,
+            "Tap to open files on the PC or in the app",
+            tint = tint,
+            modifier = Modifier.size(14.dp),
+        )
+        Text(
+            if (openInApp) "Open in app" else "Open on PC",
+            color = tint,
+            fontSize = 11.sp,
+        )
+    }
+}
+
+/**
+ * Thumbnail grid.
+ *
+ * Adaptive columns rather than a fixed count so it stays sensible on the razr's
+ * inner and outer screens, which differ enormously in width.
+ */
+@Composable
+private fun GridListing(
+    vm: RemoteViewModel,
+    onOpen: (FsEntry) -> Unit,
+    onMenu: (String) -> Unit,
+) {
+    LazyVerticalGrid(
+        columns = GridCells.Adaptive(108.dp),
+        contentPadding = PaddingValues(10.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.fillMaxSize(),
+    ) {
+        items(vm.entries.size, key = { vm.entries[it].name }) { idx ->
+            val entry = vm.entries[idx]
+            Column(
+                Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(P.surface)
+                    .border(1.dp, P.border, RoundedCornerShape(10.dp))
+                    .tapTarget { onOpen(entry) },
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(1f)
+                        .background(P.panel),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Thumb(vm, entry)
+                    if (isMedia(entry.name)) {
+                        // A play badge distinguishes a video from a still at a
+                        // glance -- both render as a single frame otherwise.
+                        Box(
+                            Modifier
+                                .align(Alignment.BottomEnd)
+                                .padding(5.dp)
+                                .size(20.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(P.bg.copy(alpha = 0.72f)),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(Icons.Filled.PlayArrow, null, tint = P.accent,
+                                modifier = Modifier.size(13.dp))
+                        }
+                    }
+                }
+                Row(
+                    // Fixed caption height: letting it size to 1 or 2 wrapped
+                    // lines made every row of the grid a different height.
+                    Modifier.fillMaxWidth().height(42.dp)
+                        .padding(start = 7.dp, end = 2.dp, top = 5.dp),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Text(
+                        entry.name,
+                        color = P.text, fontSize = 11.sp, lineHeight = 13.sp,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Box(
+                        Modifier.size(22.dp).tapTarget { onMenu(entry.name) },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(Icons.Filled.MoreVert, "Actions", tint = P.sub,
+                            modifier = Modifier.size(14.dp))
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** A preview if the agent can render one, otherwise the type icon. */
+@Composable
+private fun Thumb(vm: RemoteViewModel, entry: FsEntry) {
+    val path = vm.child(entry.name)
+    val bitmap by produceState<ImageBitmap?>(null, path, entry.mtime) {
+        value = if (entry.isDir || !canThumb(entry.name)) null
+        else vm.client?.let { vm.thumbs.load(it, path, entry.mtime) }
+    }
+
+    val image = bitmap
+    if (image != null) {
+        Image(
+            bitmap = image,
+            contentDescription = entry.name,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize(),
+        )
+    } else {
+        Icon(
+            iconFor(entry), null,
+            tint = fileColor(entry.name, entry.isDir),
+            modifier = Modifier.size(34.dp),
+        )
     }
 }
 
@@ -385,16 +630,23 @@ private fun FileRow(entry: FsEntry, onOpen: () -> Unit, onMenu: () -> Unit) {
 
 @Composable
 private fun ActionSheet(
+    canEditHere: Boolean,
+    canPlay: Boolean,
+    onPlay: () -> Unit,
     onRename: () -> Unit,
     onOpenOnPc: () -> Unit,
+    onEditHere: () -> Unit,
     onDelete: () -> Unit,
 ) {
     Row(Modifier.fillMaxWidth().background(P.panel)) {
-        listOf(
-            Triple(Icons.Filled.DriveFileRenameOutline, "Rename", onRename),
-            Triple(Icons.Filled.OpenInNew, "Open on PC", onOpenOnPc),
-            Triple(Icons.Filled.Delete, "Trash", onDelete),
-        ).forEach { (icon, label, action) ->
+        buildList {
+            add(Triple(Icons.Filled.DriveFileRenameOutline, "Rename", onRename))
+            add(Triple(Icons.Filled.OpenInNew, "Open on PC", onOpenOnPc))
+            // Both destinations stay reachable whichever way the toggle is set.
+            if (canPlay) add(Triple(Icons.Filled.PlayArrow, "Play here", onPlay))
+            if (canEditHere) add(Triple(Icons.Filled.Edit, "Edit here", onEditHere))
+            add(Triple(Icons.Filled.Delete, "Trash", onDelete))
+        }.forEach { (icon, label, action) ->
             val danger = label == "Trash"
             Column(
                 Modifier.weight(1f).tapTarget(onClick = action).padding(vertical = 10.dp),

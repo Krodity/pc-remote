@@ -40,6 +40,25 @@ class AgentClient(private val pairing: Pairing) {
         .retryOnConnectionFailure(true)
         .build()
 
+    /**
+     * A genuinely separate client for media block fetches.
+     *
+     * Both the Dispatcher *and* the ConnectionPool have to be replaced:
+     * `newBuilder()` shares them with the parent client, and the default
+     * Dispatcher caps a single host at 5 concurrent requests. A player pulling
+     * blocks would otherwise fill that quota and leave the ping call and the
+     * socket handshake queued behind it -- which reads to the user as the app
+     * going offline the moment a video starts.
+     */
+    private val streamHttp = http.newBuilder()
+        .dispatcher(okhttp3.Dispatcher().apply {
+            maxRequests = 8
+            maxRequestsPerHost = 8
+        })
+        .connectionPool(okhttp3.ConnectionPool(6, 5, TimeUnit.MINUTES))
+        .pingInterval(0, TimeUnit.SECONDS)
+        .build()
+
     // ── REST ─────────────────────────────────────────────────────────────────
     private fun url(path: String, query: Map<String, String> = emptyMap()) =
         (pairing.httpBase + path).toHttpUrl().newBuilder().apply {
@@ -133,6 +152,47 @@ class AgentClient(private val pairing: Pairing) {
         ).execute().use {
             if (!it.isSuccessful) throw AgentException("HTTP ${it.code}")
             it.body?.bytes() ?: ByteArray(0)
+        }
+    }
+
+    /**
+     * One byte range, fetched synchronously.
+     *
+     * Blocking on purpose: the caller is [MediaCacheServer], which already runs
+     * each player connection on its own thread and must produce bytes in order.
+     */
+    fun fetchRangeBlocking(path: String, start: Long, endInclusive: Long): ByteArray {
+        val req = Request.Builder()
+            .url(url("/api/fs/download", mapOf("path" to path, "attach" to "0")))
+            .auth()
+            .header("Range", "bytes=$start-$endInclusive")
+            .build()
+        streamHttp.newCall(req).execute().use {
+            if (!it.isSuccessful) throw AgentException("range fetch: HTTP ${it.code}")
+            return it.body?.bytes() ?: ByteArray(0)
+        }
+    }
+
+    /** A rendered preview JPEG. Throws if the agent cannot make one. */
+    suspend fun thumb(path: String, size: Int = 256): ByteArray = withContext(Dispatchers.IO) {
+        val req = Request.Builder()
+            .url(url("/api/fs/thumb", mapOf("path" to path, "size" to size.toString())))
+            .auth().build()
+        http.newCall(req).execute().use {
+            if (!it.isSuccessful) throw AgentException("thumb: HTTP ${it.code}")
+            it.body?.bytes() ?: ByteArray(0)
+        }
+    }
+
+    /** Size and content type, via HEAD — no body transferred. */
+    suspend fun probe(path: String): Pair<Long, String> = withContext(Dispatchers.IO) {
+        val req = Request.Builder()
+            .url(url("/api/fs/download", mapOf("path" to path, "attach" to "0")))
+            .auth().head().build()
+        http.newCall(req).execute().use {
+            if (!it.isSuccessful) throw AgentException("HTTP ${it.code}")
+            val len = it.header("Content-Length")?.toLongOrNull() ?: 0L
+            len to (it.header("Content-Type") ?: "application/octet-stream")
         }
     }
 
