@@ -73,11 +73,11 @@ private val FN_KEYS = (1..12).map { "f$it" }
  * and Alt+F4 does nothing at all.
  */
 private val COMBOS = listOf(
-    "super+return" to "Terminal",
+    "super+enter" to "Terminal",
     "super+space" to "Launcher",
     "super+q" to "Close window",
     "super+f" to "Fullscreen",
-    "super+shift+return" to "Browser",
+    "super+shift+enter" to "Browser",
     "super+shift+f" to "Files",
     "ctrl+c" to "Copy",
     "ctrl+v" to "Paste",

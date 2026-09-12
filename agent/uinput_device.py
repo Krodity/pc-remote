@@ -73,6 +73,7 @@ KEYS = {
     '0': 11, 'minus': 12, 'equal': 13, 'backspace': 14, 'bksp': 14, 'tab': 15,
     'q': 16, 'w': 17, 'e': 18, 'r': 19, 't': 20, 'y': 21, 'u': 22, 'i': 23,
     'o': 24, 'p': 25, 'leftbrace': 26, 'rightbrace': 27, 'enter': 28,
+    'return': 28,
     'ctrl': 29, 'leftctrl': 29,
     'a': 30, 's': 31, 'd': 32, 'f': 33, 'g': 34, 'h': 35, 'j': 36, 'k': 37,
     'l': 38, 'semicolon': 39, 'apostrophe': 40, 'grave': 41,
