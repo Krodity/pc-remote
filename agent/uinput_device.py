@@ -11,7 +11,7 @@ compositor. That makes it session-agnostic -- it works the same on Hyprland, on
 X11, or on a bare VT, and it keeps working across a compositor restart.
 
 Access: /dev/uinput is root:input 0660 with a uaccess ACL granting the seat
-owner rw (see /etc/udev/rules.d/50-uinput.rules). aepc is also in group `input`.
+owner rw (see /etc/udev/rules.d/50-uinput.rules). the user is also in group `input`.
 
 Keycodes are raw scancodes, so what a key *produces* depends on the
 compositor's active layout. The character map below is US QWERTY, matching

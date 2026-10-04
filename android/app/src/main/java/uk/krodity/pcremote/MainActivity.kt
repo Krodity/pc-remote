@@ -46,6 +46,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -57,8 +58,11 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import uk.krodity.pcremote.data.Link
+import uk.krodity.pcremote.data.isImage
 import uk.krodity.pcremote.ui.RemoteViewModel
 import uk.krodity.pcremote.ui.screens.FilesScreen
+import uk.krodity.pcremote.ui.screens.ImageViewer
+import uk.krodity.pcremote.ui.screens.openWithApp
 import uk.krodity.pcremote.ui.screens.KeysScreen
 import uk.krodity.pcremote.ui.screens.MouseScreen
 import uk.krodity.pcremote.ui.screens.PairScreen
@@ -129,6 +133,7 @@ private fun Root(vm: RemoteViewModel) {
     }
 
     var tab by rememberSaveable { mutableStateOf(Tab.MOUSE) }
+    val ctx = LocalContext.current
 
     Scaffold(
         containerColor = P.bg,
@@ -150,6 +155,23 @@ private fun Root(vm: RemoteViewModel) {
                 Tab.SHELL -> ShellScreen(vm)
             }
         }
+    }
+
+    // Outside the Scaffold on purpose: a picture gets the status bar and the
+    // gesture area too, and the viewer insets itself.
+    vm.viewingImage?.let { name ->
+        // The whole folder is handed over, not just the tapped file, so a swipe
+        // walks the directory rather than dead-ending on one picture.
+        val images = vm.entries.filter { !it.isDir && isImage(it.name) }
+        val at = images.indexOfFirst { it.name == name }
+        if (at < 0) vm.viewingImage = null else ImageViewer(
+            vm = vm,
+            images = images,
+            startIndex = at,
+            onClose = { vm.viewingImage = null },
+            onOpenWith = { openWithApp(vm, ctx, it.name) },
+            onOpenOnPc = { e -> vm.fsAction("open") { it.openOnPc(vm.child(e.name)) } },
+        )
     }
 }
 

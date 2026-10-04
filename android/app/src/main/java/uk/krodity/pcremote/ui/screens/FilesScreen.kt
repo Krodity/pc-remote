@@ -45,6 +45,7 @@ import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.OpenInNew
@@ -75,8 +76,11 @@ import kotlinx.coroutines.launch
 import android.content.Intent
 import android.net.Uri
 import uk.krodity.pcremote.data.FsEntry
+import uk.krodity.pcremote.data.OpenMode
 import uk.krodity.pcremote.data.canThumb
+import uk.krodity.pcremote.data.isImage
 import uk.krodity.pcremote.data.isMedia
+import uk.krodity.pcremote.data.viewableMimeOf
 import uk.krodity.pcremote.ui.FieldStyle
 import uk.krodity.pcremote.ui.RemoteViewModel
 import uk.krodity.pcremote.ui.fileColor
@@ -171,7 +175,7 @@ fun FilesScreen(vm: RemoteViewModel) {
                     }
                 }
                     Spacer(Modifier.width(8.dp))
-                    OpenModeToggle(vm.openInApp) { vm.toggleOpenInApp() }
+                    OpenModeToggle(vm.openMode) { vm.cycleOpenMode() }
                     Spacer(Modifier.width(6.dp))
                     Box(
                         Modifier
@@ -232,10 +236,21 @@ fun FilesScreen(vm: RemoteViewModel) {
                 val openEntry: (FsEntry) -> Unit = { entry ->
                     when {
                         entry.isDir -> vm.navigate(vm.child(entry.name))
-                        !vm.openInApp -> vm.fsAction("open") {
+                        vm.openMode == OpenMode.PC -> vm.fsAction("open") {
                             it.openOnPc(vm.child(entry.name))
                         }
-                        isMedia(entry.name) -> playOnPhone(vm, ctx, entry.name)
+                        // "Open with" covers every type the phone has a
+                        // handler for; text with no handler still has ours.
+                        vm.openMode == OpenMode.EXTERNAL ->
+                            if (viewableMimeOf(entry.name) != null) {
+                                openWithApp(vm, ctx, entry.name)
+                            } else {
+                                openHere(vm, scope, entry.name) { editor = entry.name to it }
+                            }
+                        // In-app: images get the viewer, text the editor, and
+                        // video a player, since there is no point writing one.
+                        isImage(entry.name) -> vm.viewingImage = entry.name
+                        isMedia(entry.name) -> openWithApp(vm, ctx, entry.name)
                         else -> openHere(vm, scope, entry.name) {
                             editor = entry.name to it
                         }
@@ -243,7 +258,16 @@ fun FilesScreen(vm: RemoteViewModel) {
                 }
 
                 if (vm.gridView) {
-                    GridListing(vm, openEntry) { menuFor = it }
+                    GridListing(vm, openEntry) { menuFor = if (menuFor == it) null else it }
+                    vm.entries.firstOrNull { it.name == menuFor }?.let { entry ->
+                        Column(Modifier.align(Alignment.BottomCenter)) {
+                            Box(Modifier.fillMaxWidth().height(1.dp).background(P.border))
+                            EntryActions(vm, scope, ctx, entry,
+                                onDismiss = { menuFor = null },
+                                onRename = { renaming = entry.name; draft = entry.name },
+                                onEdit = { editor = entry.name to it })
+                        }
+                    }
                 } else LazyColumn(Modifier.fillMaxSize()) {
 
                     if (creating != null) {
@@ -299,30 +323,10 @@ fun FilesScreen(vm: RemoteViewModel) {
                             }
 
                             if (menuFor == entry.name) {
-                                ActionSheet(
-                                    canEditHere = !entry.isDir && !isMedia(entry.name),
-                                    canPlay = isMedia(entry.name),
-                                    onPlay = {
-                                        menuFor = null
-                                        playOnPhone(vm, ctx, entry.name)
-                                    },
-                                    onRename = {
-                                        renaming = entry.name; draft = entry.name; menuFor = null
-                                    },
-                                    onOpenOnPc = {
-                                        menuFor = null
-                                        vm.fsAction("open") { it.openOnPc(vm.child(entry.name)) }
-                                    },
-                                    onEditHere = {
-                                        menuFor = null
-                                        openHere(vm, scope, entry.name) { editor = entry.name to it }
-                                    },
-                                    onDelete = {
-                                        menuFor = null
-                                        vm.fsAction("delete") { it.delete(vm.child(entry.name)) }
-                                        vm.toast = "${entry.name} → trash"
-                                    },
-                                )
+                                EntryActions(vm, scope, ctx, entry,
+                                    onDismiss = { menuFor = null },
+                                    onRename = { renaming = entry.name; draft = entry.name },
+                                    onEdit = { editor = entry.name to it })
                             }
                             Box(Modifier.fillMaxWidth().height(1.dp).background(P.border))
                         }
@@ -375,30 +379,82 @@ fun FilesScreen(vm: RemoteViewModel) {
 }
 
 /**
- * Hand a remote media file to whatever player the user prefers.
+ * The per-file action row, wired to the browser's state.
+ *
+ * Extracted so the grid and the list share it rather than only the list having
+ * one -- the actions are no longer a shortcut for a tap now that a picture can
+ * go three different places.
+ */
+@Composable
+private fun EntryActions(
+    vm: RemoteViewModel,
+    scope: kotlinx.coroutines.CoroutineScope,
+    ctx: android.content.Context,
+    entry: FsEntry,
+    onDismiss: () -> Unit,
+    onRename: () -> Unit,
+    onEdit: (String) -> Unit,
+) {
+    ActionSheet(
+        canEditHere = !entry.isDir && !isMedia(entry.name) && !isImage(entry.name),
+        canView = isImage(entry.name),
+        canOpenWith = viewableMimeOf(entry.name) != null,
+        isVideo = isMedia(entry.name),
+        onView = { onDismiss(); vm.viewingImage = entry.name },
+        onOpenWith = { onDismiss(); openWithApp(vm, ctx, entry.name) },
+        onRename = { onDismiss(); onRename() },
+        onOpenOnPc = {
+            onDismiss()
+            vm.fsAction("open") { it.openOnPc(vm.child(entry.name)) }
+        },
+        onEditHere = {
+            onDismiss()
+            openHere(vm, scope, entry.name, onEdit)
+        },
+        onDelete = {
+            onDismiss()
+            vm.fsAction("delete") { it.delete(vm.child(entry.name)) }
+            vm.toast = "${entry.name} → trash"
+        },
+    )
+}
+
+/**
+ * Hand a remote file to whatever app on this phone the user prefers.
  *
  * The URL points at the app's own loopback stream server, not at the agent: a
- * third-party player cannot authenticate, and putting the bearer token in a URL
+ * third-party app cannot authenticate, and putting the bearer token in a URL
  * would hand the credential to an app we do not control.
  *
  * Fired as a bare ACTION_VIEW rather than through `createChooser`. A forced
  * chooser cannot be dismissed with "Always", so it makes setting a default
- * player impossible -- with a plain intent Android shows its own "Open with"
- * dialog offering *Just once* / *Always* and then remembers the choice. The
- * chooser is kept only as the fallback for when nothing claims the type.
+ * impossible -- with a plain intent Android shows its own "Open with" dialog
+ * offering *Just once* / *Always* and then remembers the choice. That is the
+ * whole mechanism by which a default gallery or player gets picked, for stills
+ * exactly as for video. The chooser is kept only as the fallback for when
+ * nothing claims the type at all.
  */
-private fun playOnPhone(vm: RemoteViewModel, ctx: android.content.Context, name: String) {
-    vm.streamUrl(name) { url, mime ->
+internal fun openWithApp(vm: RemoteViewModel, ctx: android.content.Context, name: String) {
+    val fire: (Uri, String, Boolean) -> Unit = { uri, mime, grant ->
         val view = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(Uri.parse(url), mime)
+            setDataAndType(uri, mime)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            if (grant) addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             putExtra("title", name)
         }
         val ok = runCatching { ctx.startActivity(view) }.isSuccess
         if (!ok) {
-            runCatching { ctx.startActivity(Intent.createChooser(view, "Play ${'$'}name")) }
-                .onFailure { vm.toast = "no app on this phone can play ${'$'}name" }
+            runCatching { ctx.startActivity(Intent.createChooser(view, "Open ${'$'}name")) }
+                .onFailure { vm.toast = "no app on this phone can open ${'$'}name" }
         }
+    }
+
+    // A still is copied and handed over as content://; a film is streamed from
+    // the loopback server. See SharedFiles for why they cannot share a route.
+    if (isImage(name) && vm.canCopyLocally(name)) {
+        vm.shareUri(name) { uri, mime -> fire(uri, mime, true) }
+    } else {
+        vm.streamUrl(name) { url, mime -> fire(Uri.parse(url), mime, false) }
     }
 }
 
@@ -426,35 +482,43 @@ private fun openHere(
 }
 
 /**
- * Where a tap sends a file: the PC, or this phone.
+ * Where a tap sends a file: the PC, this app, or another app on the phone.
  *
  * A labelled pill rather than a bare icon — "opens somewhere else entirely" is
- * too consequential a mode to leave the user guessing at from a glyph.
+ * too consequential a mode to leave the user guessing at from a glyph. It
+ * cycles rather than expanding into a menu because it is three states in a row
+ * that has room for a pill and nothing more.
+ *
+ * "Open with…" is the mode that lets a default be set: it fires a plain
+ * ACTION_VIEW, so Android's own dialog offers *Always* and remembers the
+ * gallery or player chosen for that type from then on.
  */
 @Composable
-private fun OpenModeToggle(openInApp: Boolean, onToggle: () -> Unit) {
-    val tint = if (openInApp) P.accent else P.sub
+private fun OpenModeToggle(mode: OpenMode, onToggle: () -> Unit) {
+    val (icon, label) = when (mode) {
+        OpenMode.PC -> Icons.Filled.DesktopWindows to "Open on PC"
+        OpenMode.APP -> Icons.Filled.PhoneAndroid to "Open in app"
+        OpenMode.EXTERNAL -> Icons.Filled.OpenInNew to "Open with…"
+    }
+    val on = mode != OpenMode.PC
+    val tint = if (on) P.accent else P.sub
     Row(
         Modifier
             .clip(RoundedCornerShape(20.dp))
-            .background(if (openInApp) P.glow else P.panel)
-            .border(1.dp, if (openInApp) P.accent else P.border, RoundedCornerShape(20.dp))
+            .background(if (on) P.glow else P.panel)
+            .border(1.dp, if (on) P.accent else P.border, RoundedCornerShape(20.dp))
             .tapTarget(onClick = onToggle)
             .padding(horizontal = 10.dp, vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(5.dp),
     ) {
         Icon(
-            if (openInApp) Icons.Filled.PhoneAndroid else Icons.Filled.DesktopWindows,
-            "Tap to open files on the PC or in the app",
+            icon,
+            "Tap to cycle where files open: the PC, this app, or another app",
             tint = tint,
             modifier = Modifier.size(14.dp),
         )
-        Text(
-            if (openInApp) "Open in app" else "Open on PC",
-            color = tint,
-            fontSize = 11.sp,
-        )
+        Text(label, color = tint, fontSize = 11.sp)
     }
 }
 
@@ -638,8 +702,11 @@ private fun FileRow(entry: FsEntry, onOpen: () -> Unit, onMenu: () -> Unit) {
 @Composable
 private fun ActionSheet(
     canEditHere: Boolean,
-    canPlay: Boolean,
-    onPlay: () -> Unit,
+    canView: Boolean,
+    canOpenWith: Boolean,
+    isVideo: Boolean,
+    onView: () -> Unit,
+    onOpenWith: () -> Unit,
     onRename: () -> Unit,
     onOpenOnPc: () -> Unit,
     onEditHere: () -> Unit,
@@ -648,9 +715,15 @@ private fun ActionSheet(
     Row(Modifier.fillMaxWidth().background(P.panel)) {
         buildList {
             add(Triple(Icons.Filled.DriveFileRenameOutline, "Rename", onRename))
-            add(Triple(Icons.Filled.OpenInNew, "Open on PC", onOpenOnPc))
-            // Both destinations stay reachable whichever way the toggle is set.
-            if (canPlay) add(Triple(Icons.Filled.PlayArrow, "Play here", onPlay))
+            add(Triple(Icons.Filled.DesktopWindows, "On PC", onOpenOnPc))
+            // Every destination stays reachable whatever the toggle is set to.
+            if (canView) add(Triple(Icons.Filled.Image, "View here", onView))
+            if (canOpenWith) {
+                // Same intent either way; the verb is what the user expects to
+                // happen to the file, not what the code does with it.
+                if (isVideo) add(Triple(Icons.Filled.PlayArrow, "Play", onOpenWith))
+                else add(Triple(Icons.Filled.OpenInNew, "Open with", onOpenWith))
+            }
             if (canEditHere) add(Triple(Icons.Filled.Edit, "Edit here", onEditHere))
             add(Triple(Icons.Filled.Delete, "Trash", onDelete))
         }.forEach { (icon, label, action) ->

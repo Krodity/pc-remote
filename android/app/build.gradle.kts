@@ -19,6 +19,24 @@ android {
         base.archivesName = "pc-remote-$versionName"
     }
 
+    signingConfigs {
+        // Pinned rather than left to AGP's default.
+        //
+        // AGP resolves the debug keystore relative to the Android config
+        // directory, and that moved to the XDG location -- so the same source
+        // tree started producing APKs signed with a *different* key than the
+        // ones already on the phones, and an update failed with
+        // INSTALL_FAILED_UPDATE_INCOMPATIBLE on whichever device was last
+        // installed from the other side of the move. Naming the file makes the
+        // signature a property of the project instead of the environment.
+        getByName("debug") {
+            storeFile = File(System.getProperty("user.home"), ".config/.android/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
             // Debug-signed for sideloading; this is a personal tailnet app,

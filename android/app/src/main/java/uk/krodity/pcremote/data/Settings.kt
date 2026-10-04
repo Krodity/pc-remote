@@ -10,6 +10,28 @@ import kotlinx.coroutines.flow.map
 
 private val Context.store by preferencesDataStore("pc-remote")
 
+/**
+ * What a tap on a file does.
+ *
+ * Three destinations, not two, because "on the phone" turned out to be two
+ * different things: the app's own viewer and editor, or whatever gallery or
+ * player the user already prefers. [EXTERNAL] exists so that choice can be
+ * made once, in Android's own "Open with" dialog, and then remembered.
+ */
+enum class OpenMode {
+    /** `xdg-open` on the PC — the file never leaves the desk. */
+    PC,
+
+    /** This app: built-in image viewer, text editor, external player for video. */
+    APP,
+
+    /** Hand it to another app on this phone via a plain ACTION_VIEW. */
+    EXTERNAL,
+    ;
+
+    fun next() = entries[(ordinal + 1) % entries.size]
+}
+
 /** Where the agent lives and the token that proves we were paired with it. */
 data class Pairing(val host: String = "", val token: String = "") {
     val isSet get() = host.isNotBlank() && token.isNotBlank()
@@ -17,7 +39,7 @@ data class Pairing(val host: String = "", val token: String = "") {
     /**
      * Normalise whatever the user typed into "host:port".
      *
-     * Accepts a MagicDNS name ("aepc"), an IPv4 or bare IPv6 literal, any of
+     * Accepts a MagicDNS name ("my-pc"), an IPv4 or bare IPv6 literal, any of
      * those with an explicit port, and a full URL pasted from the pair page.
      * Bare IPv6 has to be bracketed before a port can be appended, otherwise
      * the last colon of the address reads as the port separator -- this box
@@ -57,7 +79,8 @@ data class Pairing(val host: String = "", val token: String = "") {
 class SettingsRepo(private val ctx: Context) {
     private val hostKey = stringPreferencesKey("host")
     private val tokenKey = stringPreferencesKey("token")
-    private val openInAppKey = booleanPreferencesKey("open_in_app")
+    private val openInAppKey = booleanPreferencesKey("open_in_app")   // legacy; migrated
+    private val openModeKey = stringPreferencesKey("open_mode")
     private val gridViewKey = booleanPreferencesKey("grid_view")
 
     val pairing: Flow<Pairing> = ctx.store.data.map {
@@ -67,11 +90,16 @@ class SettingsRepo(private val ctx: Context) {
     /**
      * Where a tapped file opens.
      *
-     * Defaults to false — i.e. on the PC. The phone's editor only handles text,
-     * and the desktop already knows what to do with every other type, so
-     * handing the file to `xdg-open` is right far more often than not.
+     * Defaults to the PC: `xdg-open` there knows what to do with every type,
+     * and the phone does not. An install made before the setting had three
+     * values is read off the old boolean, so nobody's choice is reset by the
+     * upgrade.
      */
-    val openInApp: Flow<Boolean> = ctx.store.data.map { it[openInAppKey] ?: false }
+    val openMode: Flow<OpenMode> = ctx.store.data.map { prefs ->
+        prefs[openModeKey]?.let { name ->
+            OpenMode.entries.firstOrNull { it.name == name }
+        } ?: if (prefs[openInAppKey] == true) OpenMode.APP else OpenMode.PC
+    }
 
     suspend fun save(host: String, token: String) {
         ctx.store.edit {
@@ -87,8 +115,8 @@ class SettingsRepo(private val ctx: Context) {
         ctx.store.edit { it[gridViewKey] = value }
     }
 
-    suspend fun setOpenInApp(value: Boolean) {
-        ctx.store.edit { it[openInAppKey] = value }
+    suspend fun setOpenMode(value: OpenMode) {
+        ctx.store.edit { it[openModeKey] = value.name }
     }
 
     suspend fun clear() {

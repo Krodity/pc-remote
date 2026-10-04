@@ -19,11 +19,14 @@ import uk.krodity.pcremote.data.Link
 import uk.krodity.pcremote.data.Pairing
 import uk.krodity.pcremote.data.Place
 import uk.krodity.pcremote.data.SettingsRepo
+import uk.krodity.pcremote.data.SharedFiles
 import uk.krodity.pcremote.data.MediaStreamService
 import uk.krodity.pcremote.data.MediaStreams
+import uk.krodity.pcremote.data.FullImageLoader
+import uk.krodity.pcremote.data.OpenMode
 import uk.krodity.pcremote.data.SysInfo
 import uk.krodity.pcremote.data.ThumbLoader
-import uk.krodity.pcremote.data.mediaMimeOf
+import uk.krodity.pcremote.data.viewableMimeOf
 import uk.krodity.pcremote.data.verify
 
 class RemoteViewModel(app: Application) : AndroidViewModel(app) {
@@ -45,15 +48,27 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var toast by mutableStateOf<String?>(null)
 
-    /** false = hand tapped files to xdg-open on the PC; true = edit them here. */
-    var openInApp by mutableStateOf(false)
+    /** Where a tapped file opens: the PC, this app, or another app on the phone. */
+    var openMode by mutableStateOf(OpenMode.PC)
         private set
 
     /** Detail list vs thumbnail grid in the file browser. */
     var gridView by mutableStateOf(false)
         private set
 
+    /**
+     * The image the viewer is showing, by name within [cwd], or null.
+     *
+     * Lives here rather than in the Files tab because the viewer is drawn over
+     * the whole activity: inside the tab it would be boxed in by the top bar
+     * and the bottom nav, which is not what "full screen" means for a picture.
+     */
+    var viewingImage by mutableStateOf<String?>(null)
+
     val thumbs = ThumbLoader(app.cacheDir)
+
+    /** Viewing-size images for the in-app viewer, as opposed to grid tiles. */
+    val fullImages = FullImageLoader()
 
     // ── files ────────────────────────────────────────────────────────────────
     var cwd by mutableStateOf("")
@@ -96,7 +111,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         viewModelScope.launch {
-            settings.openInApp.collect { openInApp = it }
+            settings.openMode.collect { openMode = it }
         }
         viewModelScope.launch {
             settings.gridView.collect { gridView = it }
@@ -118,37 +133,68 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Resolve a remote media file to a local URL any player can open.
+     * Resolve a remote file to a local URL any app on this phone can open.
      *
-     * Returns null (and toasts) if the agent cannot be reached, so the caller
-     * never fires an intent at a URL that will immediately fail.
+     * Used for both video and stills: the difference between them is only how
+     * much of the file the receiving app reads, and the loopback server already
+     * fetches lazily either way.
+     *
+     * Nothing is fired if the agent cannot be reached, so the caller never
+     * launches an intent at a URL that will immediately fail.
      */
     fun streamUrl(name: String, onReady: (String, String) -> Unit) {
         val c = client ?: return
         val path = child(name)
-        val mime = mediaMimeOf(name) ?: "application/octet-stream"
         viewModelScope.launch {
             runCatching { c.probe(path) }
-                .onSuccess { (size, _) ->
+                .onSuccess { (size, agentMime) ->
                     if (size <= 0) {
                         toast = "$name is empty"
                         return@onSuccess
                     }
-                    // The agent's guessed type is ignored in favour of ours:
-                    // it reports octet-stream for containers like .mkv that
-                    // Python's mimetypes does not know.
+                    // Our table wins wherever it has an answer: Python's
+                    // `mimetypes` reports octet-stream for containers like
+                    // .mkv, and nothing on the phone claims octet-stream.
+                    val mime = viewableMimeOf(name) ?: agentMime
                     val url = media.urlFor(path, size, mime)
-                    // Raised to the foreground before the player launches, or
-                    // this process gets frozen the moment it loses focus.
+                    // The service is raised before the receiving app launches:
+                    // this process is frozen the moment it loses focus, and a
+                    // frozen process cannot serve the socket it just handed
+                    // out. It stops itself once nothing has read for a minute.
                     MediaStreamService.start(getApplication(), name)
                     onReady(url, mime)
                 }
-                .onFailure { toast = "stream: ${it.message}" }
+                .onFailure { toast = "open: ${it.message}" }
         }
     }
 
-    fun toggleOpenInApp() {
-        viewModelScope.launch { settings.setOpenInApp(!openInApp) }
+    /** Size and mtime for the in-app image viewer, straight off the listing. */
+    fun entryFor(name: String): FsEntry? = entries.firstOrNull { it.name == name }
+
+    /** Whether this file is small enough to hand over as a local copy. */
+    fun canCopyLocally(name: String) = SharedFiles.canCopy(entryFor(name)?.size ?: 0)
+
+    /**
+     * Resolve a still to a `content://` URI another app will actually accept.
+     *
+     * The loopback URL that works for video does not work here: nothing on the
+     * phone claims an `http` image, so ACTION_VIEW resolves to nothing. A local
+     * copy behind the FileProvider is the form gallery apps register for, and
+     * so the only form Android can remember a default for.
+     */
+    fun shareUri(name: String, onReady: (android.net.Uri, String) -> Unit) {
+        val c = client ?: return
+        val path = child(name)
+        val mime = viewableMimeOf(name) ?: "application/octet-stream"
+        viewModelScope.launch {
+            runCatching { SharedFiles.materialise(getApplication(), c, path) }
+                .onSuccess { onReady(it, mime) }
+                .onFailure { toast = "open: ${it.message}" }
+        }
+    }
+
+    fun cycleOpenMode() {
+        viewModelScope.launch { settings.setOpenMode(openMode.next()) }
     }
 
     /** Called when the activity resumes; cheap no-op if the link is healthy. */
@@ -284,6 +330,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
             .onFailure { filesError = it.message ?: "could not open $path" }
+        if (entries.none { it.name == viewingImage }) viewingImage = null
         filesLoading = false
     }
 

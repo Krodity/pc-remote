@@ -355,8 +355,30 @@ private val MEDIA_MIME = mapOf(
     "mka" to "audio/x-matroska", "aiff" to "audio/aiff", "ape" to "audio/x-ape",
 )
 
+private val IMAGE_MIME = mapOf(
+    "png" to "image/png", "jpg" to "image/jpeg", "jpeg" to "image/jpeg",
+    "gif" to "image/gif", "webp" to "image/webp", "bmp" to "image/bmp",
+    "tiff" to "image/tiff", "tif" to "image/tiff", "avif" to "image/avif",
+    "heic" to "image/heic", "heif" to "image/heif", "ico" to "image/x-icon",
+    "svg" to "image/svg+xml",
+)
+
 /** The MIME type to advertise, or null if this is not playable media. */
 fun mediaMimeOf(name: String): String? =
     MEDIA_MIME[name.substringAfterLast('.', "").lowercase()]
 
 fun isMedia(name: String) = mediaMimeOf(name) != null
+
+fun imageMimeOf(name: String): String? =
+    IMAGE_MIME[name.substringAfterLast('.', "").lowercase()]
+
+fun isImage(name: String) = imageMimeOf(name) != null
+
+/**
+ * The type to hand another app, for anything this phone could plausibly open.
+ *
+ * Our own table wins over the agent's `mimetypes` guess wherever it has an
+ * answer: Python does not know `.mkv`, and an `application/octet-stream` finds
+ * no handler at all.
+ */
+fun viewableMimeOf(name: String): String? = mediaMimeOf(name) ?: imageMimeOf(name)

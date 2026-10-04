@@ -1,0 +1,8 @@
+<!-- Same glyph as android/…/ic_launcher_foreground.xml, cropped tighter:
+     iOS masks the corners itself and has no adaptive-icon safe zone. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="16 17 76 76">
+  <rect x="16" y="17" width="76" height="76" fill="#0B1523"/>
+  <path fill="#22D3EE" fill-rule="evenodd" d="M30,34 L78,34 A4,4 0 0 1 82,38 L82,66 A4,4 0 0 1 78,70 L30,70 A4,4 0 0 1 26,66 L26,38 A4,4 0 0 1 30,34 Z M32,40 L32,64 L76,64 L76,40 Z"/>
+  <path fill="#22D3EE" d="M46,70 L62,70 L64,76 L44,76 Z"/>
+  <path fill="#A78BFA" d="M38,46 L54,46 L54,50 L38,50 Z M38,54 L48,54 L48,58 L38,58 Z"/>
+</svg>

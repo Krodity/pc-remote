@@ -68,9 +68,9 @@ private val FN_KEYS = (1..12).map { "f$it" }
 /**
  * Combos worth a dedicated button on this machine.
  *
- * These are read off the live Hyprland config rather than carried over from the
- * mock's Windows list -- Super+Q closes a window here, Super+Space is Ulauncher,
- * and Alt+F4 does nothing at all.
+ * These match a default-ish Hyprland setup rather than a Windows list --
+ * Super+Q closes a window, Super+Space opens the launcher,
+ * and Alt+F4 does nothing. Edit this list to match your own binds.
  */
 private val COMBOS = listOf(
     "super+enter" to "Terminal",

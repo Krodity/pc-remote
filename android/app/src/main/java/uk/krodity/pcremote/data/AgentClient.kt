@@ -145,13 +145,24 @@ class AgentClient(private val pairing: Pairing) {
     suspend fun openOnPc(path: String) =
         post("/api/open", mapOf("path" to path), JsonObject::class.java)
 
-    suspend fun download(path: String): ByteArray = withContext(Dispatchers.IO) {
-        http.newCall(
-            Request.Builder().url(url("/api/fs/download", mapOf("path" to path)))
-                .auth().build()
-        ).execute().use {
+    suspend fun download(path: String): ByteArray =
+        withContext(Dispatchers.IO) { downloadBlocking(path) }
+
+    /**
+     * A whole file, fetched synchronously.
+     *
+     * Goes out on [streamHttp] rather than the main client for the same reason
+     * the media block fetches do: a multi-megabyte image would otherwise sit in
+     * the 5-per-host queue that the ping call and the socket handshake share,
+     * and the app would read "offline" while a picture loaded.
+     */
+    fun downloadBlocking(path: String): ByteArray {
+        val req = Request.Builder()
+            .url(url("/api/fs/download", mapOf("path" to path, "attach" to "0")))
+            .auth().build()
+        streamHttp.newCall(req).execute().use {
             if (!it.isSuccessful) throw AgentException("HTTP ${it.code}")
-            it.body?.bytes() ?: ByteArray(0)
+            return it.body?.bytes() ?: ByteArray(0)
         }
     }
 
@@ -178,7 +189,7 @@ class AgentClient(private val pairing: Pairing) {
         val req = Request.Builder()
             .url(url("/api/fs/thumb", mapOf("path" to path, "size" to size.toString())))
             .auth().build()
-        http.newCall(req).execute().use {
+        streamHttp.newCall(req).execute().use {
             if (!it.isSuccessful) throw AgentException("thumb: HTTP ${it.code}")
             it.body?.bytes() ?: ByteArray(0)
         }

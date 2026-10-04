@@ -90,7 +90,7 @@ fun PairScreen(vm: RemoteViewModel) {
             value = host,
             onValueChange = { host = it; error = null },
             modifier = Modifier.fillMaxWidth(),
-            placeholder = "aepc  ·  100.x.y.z  ·  host:8778",
+            placeholder = "my-pc  ·  100.x.y.z  ·  host:8778",
             mono = true,
         )
         Spacer(Modifier.height(16.dp))

@@ -42,6 +42,19 @@
                 <data android:scheme="pcremote" android:host="pair" />
             </intent-filter>
         </activity>
+        <!-- Stills go to another app as a content:// URI, not as a loopback
+             http one: a video player registers for http, but a gallery app
+             does not, so an http image URI finds no handler at all. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/shared_files" />
+        </provider>
+
         <service
             android:name=".data.MediaStreamService"
             android:exported="false"

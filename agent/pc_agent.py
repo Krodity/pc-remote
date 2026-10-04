@@ -20,7 +20,6 @@ This grants a phone full control of the machine: a real login shell, arbitrary
 keystrokes, and read/write on the whole filesystem. That is the point of the
 tool, and it is exactly as much access as the person holding the keyboard has.
 """
-import base64
 import hashlib
 import json
 import logging
@@ -109,6 +108,88 @@ def tailscale_ips():
         return [ln.strip() for ln in out.stdout.splitlines() if ln.strip()]
     except Exception:
         return []
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# desktop session environment
+# ═════════════════════════════════════════════════════════════════════════════
+# Cached because a burst of opens should not cost a /proc walk each time, but
+# short enough that logging out and back in (a new WAYLAND_DISPLAY) is picked
+# up on its own -- the agent outlives the session it talks to.
+SESSION_ENV_TTL = 10.0
+_SESSION_ENV = {'at': 0.0, 'env': None}
+
+# Compositors, best first. Anything else owned by this user that carries a
+# display variable will do; these just win the tie.
+_COMPOSITORS = ('Hyprland', 'deniald', 'quickshell', 'sway', 'gnome-shell')
+
+
+def _env_from_session_process():
+    """Pull the graphical session's environment out of /proc.
+
+    Exact by construction -- NUL-separated, so there is no shell quoting to
+    undo, unlike `systemctl --user show-environment`, which emits values like
+    QT_QPA_PLATFORM=$'wayland;xcb' that a naive parser mangles into something
+    Qt then refuses to start on.
+    """
+    uid, best, best_score = os.getuid(), None, 0
+    for entry in os.listdir('/proc'):
+        if not entry.isdigit():
+            continue
+        proc = pathlib.Path('/proc', entry)
+        try:
+            if proc.stat().st_uid != uid:
+                continue
+            raw = (proc / 'environ').read_bytes()
+            comm = (proc / 'comm').read_text().strip()
+        except OSError:      # the process exited mid-walk, or is not ours
+            continue
+        env = {}
+        for item in raw.split(b'\0'):
+            key, sep, val = item.partition(b'=')
+            if sep:
+                env[key.decode('utf-8', 'replace')] = val.decode('utf-8',
+                                                                 'replace')
+        if not (env.get('WAYLAND_DISPLAY') or env.get('DISPLAY')):
+            continue
+        score = 2 if comm in _COMPOSITORS else 1
+        if score > best_score:
+            best, best_score = env, score
+        if best_score == 2:
+            break
+    return best
+
+
+def session_env():
+    """This process's environment, overlaid with the live session's.
+
+    pc-agent is started by `default.target` at boot, *before* the session runs
+    `dbus-update-activation-environment`, so its own environment has no
+    WAYLAND_DISPLAY / DISPLAY / XDG_CURRENT_DESKTOP. Anything GUI it launches
+    therefore lands somewhere headless: `xdg-open` takes its no-display branch,
+    skips the .desktop lookup entirely, falls through to a list of text-mode
+    browsers and exits 3 -- which is why "Open on PC" silently did nothing.
+    Ordering the unit after graphical-session.target would not be enough; the
+    agent has to survive the session restarting under it.
+    """
+    now = time.monotonic()
+    cached = _SESSION_ENV['env']
+    if cached is not None and now - _SESSION_ENV['at'] < SESSION_ENV_TTL:
+        return cached
+    env = dict(os.environ)
+    try:
+        found = _env_from_session_process()
+    except Exception as exc:                                  # never fatal
+        log.warning('could not read the session environment: %s', exc)
+        found = None
+    if found:
+        env.update(found)
+    else:
+        log.warning('no graphical session found; GUI launches may not appear')
+    # Keep our own identity: these describe the agent, not the session.
+    env.update(PC_REMOTE='1', HOME=str(HOME))
+    _SESSION_ENV.update(at=now, env=env)
+    return env
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -549,7 +630,11 @@ class Handler(BaseHTTPRequestHandler):
                                    attach=arg('attach', '1') != '0')
 
         if path == '/api/fs/thumb':
-            size = max(48, min(512, int(arg('size', '256') or 256)))
+            # The ceiling is a full-screen preview, not a grid tile: the phone's
+            # image viewer asks for a screen-sized render of anything it cannot
+            # decode itself (SVG, TIFF, or a 235 MP upscayl PNG), and 512 px
+            # looked like a thumbnail blown up, because it was one.
+            size = max(48, min(4096, int(arg('size', '256') or 256)))
             data = thumbnail(resolve(arg('path')), size)
             # Immutable: the cache key already includes mtime and size, so a
             # changed file is a different URL.
@@ -615,17 +700,37 @@ class Handler(BaseHTTPRequestHandler):
             cwd = body.get('cwd') or str(HOME)
             r = subprocess.run(cmd, shell=True, capture_output=True, text=True,
                                timeout=timeout, cwd=cwd,
+                               env=session_env(),
                                executable=SHELL)
             return self._json({'code': r.returncode, 'out': r.stdout,
                                'err': r.stderr})
 
         if path == '/api/open':
-            # Hand a path to the desktop's default application.
+            # Hand a path to the desktop's default application, in the
+            # *session's* environment -- see session_env(); without it
+            # xdg-open finds no display and opens nothing.
             target = str(resolve(body.get('path')))
-            subprocess.Popen(['xdg-open', target],
-                             stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL,
-                             start_new_session=True)
+            proc = subprocess.Popen(['xdg-open', target],
+                                    env=session_env(),
+                                    stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.PIPE,
+                                    start_new_session=True)
+            # xdg-open exits as soon as it has handed the file off, so a
+            # non-zero exit inside this window is a real failure and the phone
+            # should say so rather than show the old unconditional ok. Still
+            # running after it = handed off to a player that blocks.
+            try:
+                rc = proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                return self._json({'ok': True, 'opened': target})
+            if rc != 0:
+                err = (proc.stderr.read() or b'').decode('utf-8', 'replace')
+                detail = ' / '.join(ln.strip() for ln in err.splitlines()
+                                    if ln.strip())[-300:]
+                log.warning('xdg-open %s failed (exit %s): %s',
+                            target, rc, detail or '(no output)')
+                return self._err(500, f'xdg-open exited {rc} on the PC'
+                                      + (f': {detail}' if detail else ''))
             return self._json({'ok': True, 'opened': target})
 
         return self._err(404, f'no such endpoint: {path}')
@@ -636,7 +741,7 @@ class HTTPServerV6(ThreadingHTTPServer):
 
     Binding :: with IPV6_V6ONLY off serves both families from one socket, which
     sidesteps the trap that bit nginx here before: MagicDNS publishes A *and*
-    AAAA for `aepc`, so an IPv4-only listener looks randomly down to clients
+    AAAA for the host, so an IPv4-only listener looks randomly down to clients
     that prefer IPv6.
     """
     address_family = socket.AF_INET6
@@ -685,7 +790,9 @@ class PtySession:
                 os.chdir(cwd)
             except OSError:
                 os.chdir(str(HOME))
-            env = dict(os.environ)
+            # session_env() rather than os.environ so a GUI app launched from
+            # the phone's shell appears on the desktop like one started locally.
+            env = dict(session_env())
             env.update(TERM='xterm-256color', COLUMNS=str(cols), LINES=str(rows),
                        PC_REMOTE='1')
             # -i so the shell sources the interactive rc files; the phone gets

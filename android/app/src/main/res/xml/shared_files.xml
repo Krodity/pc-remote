@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The one directory handed out as content:// URIs. Scoped to a subdirectory
+     of the cache so nothing else the app stores is reachable by a grant. -->
+<paths>
+    <cache-path name="shared" path="shared/" />
+</paths>
