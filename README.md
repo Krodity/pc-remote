@@ -18,6 +18,15 @@ Phone app  ──HTTP  :8778──▶  pc-agent  ──▶  filesystem, sysinfo,
 > ⚠️ **A paired phone has a shell as you on the PC.** Read the
 > [Security model](#security-model) before you install this.
 
+
+<p align="center">
+  <img src="docs/images/files.png" width="200" alt="Files tab with thumbnails">
+  <img src="docs/images/mouse.png" width="200" alt="Trackpad">
+  <img src="docs/images/keys.png" width="200" alt="Keys tab">
+  <img src="docs/images/shell.png" width="200" alt="Shell tab">
+</p>
+
+
 ---
 
 ## Contents
