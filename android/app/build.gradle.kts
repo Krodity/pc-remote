@@ -29,11 +29,15 @@ android {
         // INSTALL_FAILED_UPDATE_INCOMPATIBLE on whichever device was last
         // installed from the other side of the move. Naming the file makes the
         // signature a property of the project instead of the environment.
-        getByName("debug") {
-            storeFile = File(System.getProperty("user.home"), ".config/.android/debug.keystore")
-            storePassword = "android"
-            keyAlias = "androiddebugkey"
-            keyPassword = "android"
+        // Machines without that file keep AGP's default debug keystore.
+        val pinnedDebugKeystore = File(System.getProperty("user.home"), ".config/.android/debug.keystore")
+        if (pinnedDebugKeystore.exists()) {
+            getByName("debug") {
+                storeFile = pinnedDebugKeystore
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
         }
     }
 
